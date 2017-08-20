@@ -1,0 +1,9 @@
+# $Id: BSDmakefile 223 2008-08-25 06:41:30Z roe $
+# Redirect BSD make to GNU gmake for convenience
+
+USE_GNU:
+	@gmake $(.TARGETS)
+
+$(.TARGETS): USE_GNU
+
+.PHONY: USE_GNU

@@ -1,0 +1,69 @@
+# $Id: Makefile 246 2008-08-26 11:58:29Z roe $
+
+OPENSSL_LIB = /usr/local/lib
+OPENSSL_INC = /usr/local/include
+
+LIBS = -lcrypto
+LDFLAGS += -L$(OPENSSL_LIB)
+CPPFLAGS += -I$(OPENSSL_INC) -I../include -g3 -DDEBUG
+# -march=native -fomit-frame-pointer -funroll-loops
+CFLAGS := -O2 -funroll-loops $(CFLAGS)
+#CFLAGS += -fPIC
+CFLAGS += -std=c99 -Wall -pedantic-errors -DDEBUG 
+
+# Uncomment this for systems without wcsdup(3), which includes
+# MacOS X 10.3, FreeBSD 6.0, NetBSD 3.0, OpenBSD 3.8, AIX 4.3.2,
+# HP-UX 11, IRIX 6.5, OSF/1 5.1, Solaris 10, Cygwin and BeOS
+#CPPFLAGS += -DCOMPAT_WCSDUP
+
+OBJS = debug.o strconv.o parse.o key.o interface.o compat.o cfb.o
+OBJS_DECRYPT = cfb.o strconv.o debug.o crypto.o wordstreams.o aes/aeskey.o aes/aescrypt.o aes/aestab.o
+#TARGETS = test testtime testthread testbrute
+TARGETS = decrypt
+#TARGETS += libfpwchk-word.so libfpwchk-word.a
+
+STRIP ?= strip
+
+all: $(TARGETS) 
+#dotest
+
+dotest: test
+	for f in ../samples/word-*/*.doc; do \
+		echo ./test $$f ; \
+		./test $$f 2>/dev/null ; \
+	done
+
+test: $(OBJS) test.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+decrypt: $(OBJS_DECRYPT) decrypt.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+
+testtime: $(OBJS) testtime.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+
+testthread: $(OBJS) testthread.o
+	$(CC) $(LDFLAGS) -pthread -o $@ $^ $(LIBS)
+
+testbrute: debug.o keybrute.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+
+%.o: %.c *.h ../include/fpwchk/*.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+keybrute.o: key.c *.h ../include/fpwchk/*.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DWITH_BRUTE_FORCE -c -o $@ $<
+
+libfpwchk-word.a: $(OBJS)
+	$(AR) r $@ $^
+
+libfpwchk-word.so: $(OBJS)
+	$(CC) $(LDFLAGS) -shared -o $@ $^ $(LIBS)
+
+strip: $(TARGETS)
+	$(STRIP) -g $^
+
+clean:
+	rm -f *.o aes/*.o *~ *.core $(TARGETS)
+
+.PHONY: all clean dotest strip
+

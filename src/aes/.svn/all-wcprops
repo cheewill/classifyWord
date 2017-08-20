@@ -1,0 +1,35 @@
+K 25
+svn:wc:ra_dav:version-url
+V 50
+/svn/wk09/!svn/ver/42/trunk/from_wk08/word/src/aes
+END
+aestab.c
+K 25
+svn:wc:ra_dav:version-url
+V 59
+/svn/wk09/!svn/ver/39/trunk/from_wk08/word/src/aes/aestab.c
+END
+aesopt.h
+K 25
+svn:wc:ra_dav:version-url
+V 59
+/svn/wk09/!svn/ver/42/trunk/from_wk08/word/src/aes/aesopt.h
+END
+aeskey.c
+K 25
+svn:wc:ra_dav:version-url
+V 59
+/svn/wk09/!svn/ver/39/trunk/from_wk08/word/src/aes/aeskey.c
+END
+aescrypt.c
+K 25
+svn:wc:ra_dav:version-url
+V 61
+/svn/wk09/!svn/ver/39/trunk/from_wk08/word/src/aes/aescrypt.c
+END
+aes.h
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/wk09/!svn/ver/39/trunk/from_wk08/word/src/aes/aes.h
+END

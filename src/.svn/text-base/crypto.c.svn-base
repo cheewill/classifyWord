@@ -1,0 +1,709 @@
+#include "crypto.h"
+#include "errorcodes.h"
+#include "wordstreams.h"
+#include "strconv.h"
+#include "debug.h"
+#include "byteswap.h"
+#include "string.h"
+#include "debug.h"
+#include "key.h"
+#include <openssl/rc4.h>
+
+#include "key.h"
+#include "byteswap.h"
+#include "memeq.h"
+#include "debug.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+
+#include <openssl/md5.h>
+#include <openssl/sha.h>
+#include <openssl/rc4.h>
+
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * RC4 40-bit legacy encryption scheme.                                      *
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+void
+key_rc4basic_create(key_rc4basic_ctx_t *ctx,
+                    uint8_t salt[16], uint8_t ev[16], uint8_t evh[16])
+{
+
+	//ctx = (key_rc4basic_ctx_t*)malloc(sizeof(key_rc4basic_ctx_t));
+	//memset(ctx, 0, sizeof(key_rc4basic_ctx_t));
+	//memcpy(ctx->salt, salt, 16);
+	memcpy(ctx->ev, ev, 16);
+	memcpy(ctx->evh, evh, 16);
+	for (uint8_t *p = ctx->saltbuf + 5;
+	     p < ctx->saltbuf + sizeof(ctx->saltbuf);
+	     p += 21) {
+		memcpy(p, salt, 16);
+	}
+}
+
+/*
+ * pwsz is length of pw in bytes without any terminating NULL
+ * pw is in UCS-2, maximum of 15 characters == 30 bytes
+ *
+ * caller must provide large enough buffer for key (16 bytes).
+ */
+void
+key_rc4basic_derive(uint8_t key[16], key_rc4basic_ctx_t *ctx,
+		uint8_t pw[], size_t pwsz, uint32_t block)
+{
+	uint8_t pwhash[64];
+	uint8_t loophash[16];
+	MD5_CTX md5_ctx;
+	
+	bzero(key, 16);
+
+	DPRINTF("===> key_rc4basic_derive\n");
+	DPRINTF("---> Parameters:\n");
+	HD("pw", pw, pwsz);
+	HD("saltbuf", ctx->saltbuf, sizeof(ctx->saltbuf));
+
+	DPRINTF("---> Code (InitKey):\n");
+	MD5_Init(&md5_ctx);
+	MD5_Update(&md5_ctx, pw, pwsz);
+	MD5_Final(pwhash, &md5_ctx);
+	HD("h(pw)", pwhash, sizeof(pwhash));
+
+#if 0
+	/* unoptimized code, left here to understand the saltbuf stuff */
+	MD5_Init(&md5_ctx);
+	for (int i = 0; i < 16; i++) {
+		HD("u:pwhash", pwhash, 5);
+		MD5_Update(&md5_ctx, pwhash, 5);
+		HD("u:salt", ctx->salt, 16);
+		MD5_Update(&md5_ctx, ctx->salt, 16);
+	}
+	MD5_Final(loophash, &md5_ctx);
+#else
+	/* optimized variant to reduce copying */
+	for (uint8_t *p = ctx->saltbuf;
+	     p < ctx->saltbuf + sizeof(ctx->saltbuf);
+	     p += 21) {
+		*(uint32_t*)p = *(uint32_t*)pwhash;
+		p[4] = pwhash[4];
+	}
+	MD5_Init(&md5_ctx);
+	MD5_Update(&md5_ctx, ctx->saltbuf, sizeof(ctx->saltbuf));
+	MD5_Final(loophash, &md5_ctx);
+#endif
+	HD("h(loop)", loophash, sizeof(loophash));
+
+	DPRINTF("---> Code (InitCipher):\n");
+	*(uint32_t*)(loophash+5) = htolel(block);
+	HD("keydata", loophash, 9);
+	MD5_Init(&md5_ctx);
+	MD5_Update(&md5_ctx, loophash, 9);
+	MD5_Final(key, &md5_ctx);
+	HD("key", key, 16);
+	return;
+}
+
+/*
+ * pwsz is length of pw in bytes without any terminating NULL
+ * pw is in UCS-2
+ */
+bool
+key_rc4basic_verify(key_rc4basic_ctx_t *ctx, uint8_t pw[], size_t pwsz)
+{
+	uint8_t key[16], v[16], vh[16], vh2[16];
+	RC4_KEY rc4_key;
+	MD5_CTX md5_ctx;
+
+	DPRINTF("===> key_rc4basic_verify\n");
+	DPRINTF("---> Parameters:\n");
+	HD("pw", pw, pwsz);
+	HD("saltbuf", ctx->saltbuf, sizeof(ctx->saltbuf));
+	HD("ev", ctx->ev, sizeof(ctx->ev));
+	HD("evh", ctx->evh, sizeof(ctx->evh));
+
+	if (pwsz > 30) {
+		return false;
+	}
+
+	key_rc4basic_derive(key, ctx, pw, pwsz, 0x00000000);
+	DPRINTF("===> back in key_rc4basic_verify\n");
+	HD("key", key, sizeof(key));
+	RC4_set_key(&rc4_key, sizeof(key), key);
+	RC4(&rc4_key, sizeof(ctx->ev), ctx->ev, v);
+	HD("v = d(ev)", v, sizeof(v));
+	RC4(&rc4_key, sizeof(ctx->evh), ctx->evh, vh);
+	HD("vh = d(evh)", vh, sizeof(vh));
+
+	MD5_Init(&md5_ctx);
+	MD5_Update(&md5_ctx, v, sizeof(v));
+	MD5_Final(vh2, &md5_ctx);
+	HD("h(v)", vh2, sizeof(vh2));
+
+	return memeq128(vh, vh2);
+}
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * RC4 CryptoAPI encryption scheme.                                          *
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+void
+key_rc4capi_create(key_rc4capi_ctx_t *ctx,
+               uint8_t salt[16], uint8_t ev[16], uint8_t evh[20],
+	       size_t keybits, size_t maxkeybits)
+{
+	memset(ctx, 0, sizeof(key_rc4capi_ctx_t));
+	memcpy(ctx->salt, salt, 16);
+	memcpy(ctx->ev, ev, 16);
+	memcpy(ctx->evh, evh, 20);
+	ctx->keysz = (keybits ? keybits : 40) / 8; /* 0 means 40 bit; compat */
+	ctx->maxkeysz = (maxkeybits ? maxkeybits : 40) / 8;
+}
+
+/*
+ * pwsz is length of pw in bytes without any terminating NULL
+ * pw is in UCS-2, maximum of 15 characters == 30 bytes
+ *
+ * The caller must provide buffer space for the key size.
+ */
+void
+key_rc4capi_derive(uint8_t key[16], key_rc4capi_ctx_t *ctx,
+		uint8_t pw[], size_t pwsz, uint32_t block)
+{
+	uint8_t h0[24];
+	SHA_CTX sha1_ctx;
+	
+	bzero(key, 16);
+
+	SHA1_Init(&sha1_ctx);
+	SHA1_Update(&sha1_ctx, ctx->salt, sizeof(ctx->salt));
+	SHA1_Update(&sha1_ctx, pw, pwsz);
+	SHA1_Final(h0, &sha1_ctx);
+
+	*(uint32_t*)(h0 + 20) = htolel(block);
+	SHA1_Init(&sha1_ctx);
+	SHA1_Update(&sha1_ctx, h0, sizeof(h0));
+	SHA1_Final(h0, &sha1_ctx); /* re-use h0 */
+
+	memcpy(key, h0, ctx->keysz);
+	return;
+}
+
+/*
+ * pwsz is length of pw in bytes without any terminating NULL
+ * pw is in UCS-2
+ */
+bool
+key_rc4capi_verify(key_rc4capi_ctx_t *ctx, uint8_t pw[], size_t pwsz)
+{
+	uint8_t v[16], vh[20], vh2[20];
+	RC4_KEY rc4_key;
+	SHA_CTX sha1_ctx;
+
+	DPRINTF("===> key_rc4capi_verify\n");
+	DPRINTF("---> Parameters:\n");
+
+	HD("pw", pw, pwsz);
+	HD("salt", ctx->salt, sizeof(ctx->salt));
+	HD("ev", ctx->ev, sizeof(ctx->ev));
+	HD("evh", ctx->evh, sizeof(ctx->evh));
+
+	key_rc4capi_derive(ctx->key, ctx, pw, pwsz, 0x00000000);
+	DPRINTF("===> back in key_rc4capi_verify\n");
+	HD("key", ctx->key, ctx->maxkeysz);
+
+	/*
+	 * We implicitly pad ctx->key with 0 up to maxkeysz bytes.
+	 */
+
+	RC4_set_key(&rc4_key, ctx->maxkeysz, ctx->key);
+	RC4(&rc4_key, sizeof(ctx->ev), ctx->ev, v);
+	HD("v = d(ev)", v, sizeof(v));
+	RC4(&rc4_key, sizeof(ctx->evh), ctx->evh, vh);
+	HD("vh = d(evh)", vh, sizeof(vh));
+
+	SHA1_Init(&sha1_ctx);
+	SHA1_Update(&sha1_ctx, v, sizeof(v));
+	SHA1_Final(vh2, &sha1_ctx);
+	HD("h(v)", vh2, sizeof(vh2));
+
+	return memeq160(vh, vh2);
+}
+
+void
+key_rc4capi_destroy(key_rc4capi_ctx_t *ctx)
+{
+	if (ctx) {
+		free(ctx);
+	}
+}
+
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ *  ECMA-376 encryption scheme.                                          *
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+void key_ecma376_create(crypto_ctx_t *ctx, uint8_t hash_value[20])
+{
+	uint32_t iter;
+	SHA_CTX sha1_ctx;
+
+	SHA1_Init(&sha1_ctx);
+	SHA1_Update(&sha1_ctx, ctx->salt, ctx->salt_size);
+	SHA1_Update(&sha1_ctx, ctx->ucs2pw, ctx->ucs2pw_size);
+	SHA1_Final(hash_value, &sha1_ctx);
+
+
+	for (iter = 0; iter < 50000; iter++)
+	{
+	  
+	  SHA1_Init(&sha1_ctx);
+	  SHA1_Update(&sha1_ctx, &iter, sizeof(uint32_t)); // TODO htoles?
+	  SHA1_Update(&sha1_ctx, hash_value, 20);
+	  SHA1_Final(hash_value, &sha1_ctx);
+
+	}
+	
+}
+
+void key_ecma376_derive(crypto_ctx_t *ctx, uint8_t hash_value[20], uint32_t block)
+{
+	uint8_t h_final[20];
+	uint8_t x1[20];
+	uint8_t x2[20];
+	SHA_CTX sha1_ctx;
+	uint32_t temp;
+	size_t key_size;
+	uint8_t buff1[64];
+	uint8_t buff2[64];
+
+	temp = htolel(block);
+
+	SHA1_Init(&sha1_ctx);
+	SHA1_Update(&sha1_ctx, hash_value, 20);
+	SHA1_Update(&sha1_ctx, &temp, sizeof(uint32_t));
+	SHA1_Final(h_final, &sha1_ctx);
+
+	key_size = ctx->keybits / 8;
+
+	for (int i=0; i < 64; i++)
+	{
+	  buff1[i] = 0x36;
+	  buff2[i] = 0x5C;
+	
+	}
+
+	for (int i=0; i < 20; i++)
+	{ 
+	  buff1[i] = buff1[i] ^ h_final[i];
+	}
+
+	SHA1_Init(&sha1_ctx);
+	SHA1_Update(&sha1_ctx, buff1, 64);
+	SHA1_Final(x1, &sha1_ctx);
+
+
+	for (int i=0; i < 20; i++)
+	{ 
+	  buff2[i] = buff2[i] ^ h_final[i];
+	}
+
+	SHA1_Init(&sha1_ctx);
+	SHA1_Update(&sha1_ctx, buff2, 64);
+	SHA1_Final(x2, &sha1_ctx);
+
+
+	for (int i=0; i < 20; i++)
+	{
+	  
+	  if (i > key_size)
+	  {
+	      break;
+	  }
+	  
+	  ctx->key[i] = x1[i];
+	}
+
+
+	for (int i=0; i < 20; i++)
+	{
+	  
+	  if ( (i+20) > key_size)
+	  {
+	      break;
+	  }
+	  
+	  ctx->key[i+20] = x2[i];
+	}
+	
+	return;
+}
+
+void AES(aes_ctx* ctx, int size, uint8_t* in, uint8_t* out) {
+  for(int i=0; i<size; i+=16) {
+    aes_decrypt_block(&in[i], &out[i], ctx);
+  }
+}
+
+bool key_ecma376_verify(crypto_ctx_t *ctx)
+{
+	uint8_t v[16], vh[20], vh2[20];
+	uint8_t hash_value[20];
+	aes_ctx aAesCtx[1];
+	SHA_CTX sha1_ctx;
+	bzero(&aAesCtx[0], sizeof(aes_ctx));
+	aAesCtx[0].n_blk = 0;
+
+	DPRINTF("===> key_ecma376_verify\n");
+	DPRINTF("---> Parameters:\n");
+
+	HD("pw", ctx->ucs2pw, ctx->ucs2pw_size);
+	HD("salt", ctx->salt, sizeof(ctx->salt));
+	HD("ev", ctx->ev, ctx->ev_size);
+	HD("evh", ctx->evh, ctx->evh_size);
+
+	key_ecma376_create(ctx, hash_value);
+        key_ecma376_derive(ctx, hash_value, 0x00000000);
+
+	HD("key", ctx->key, (ctx->keybits) / 8);
+
+	aes_set_decrypt_key(ctx->key, ctx->keybits / 8, aAesCtx);
+	AES(aAesCtx, ctx->ev_size, ctx->ev, v);
+	HD("v = d(ev)", v, sizeof(v));
+
+	AES(aAesCtx, ctx->evh_size, ctx->evh, vh);
+	HD("vh = d(evh)", vh, ctx->evh_size);
+    
+	SHA1_Init(&sha1_ctx);
+	SHA1_Update(&sha1_ctx, v, sizeof(v));
+	SHA1_Final(vh2, &sha1_ctx);
+	HD("h(v)", vh2, sizeof(vh2));
+
+	return memeq160(vh, vh2);
+}
+
+
+int create_crypto_ctx(cfb_t *pCfb, crypto_ctx_t*ctx, char*pw) {
+  /* fill in the user provided password */
+  int pwlen = strlen(pw) + 1;
+  wchar_t password[pwlen];
+  int consumed = mbstowcs(&password[0], pw, pwlen);
+  assert(consumed == pwlen -1);
+  ctx->ucs2pw_size = ucs2_from_wcs (ctx->ucs2pw, sizeof(ctx->ucs2pw),
+                                    password);
+
+  // retrieve the stream with the encryption header information */
+  cfb_directoryentry_t *pEncInfoEntry = 
+          CFB_GET_DIRENTRY_BY_NAME (pCfb, cfb_direntry_EncryptionInfo);
+  cfb_directoryentry_t* pTableEntry;
+  // load old 1Table stream if it is not a word 2007 format
+  if (!pEncInfoEntry) { pTableEntry = getTableStream(pCfb); }
+
+  if ((pEncInfoEntry==0) && (pTableEntry == 0)) {
+    fprintf(stderr, "EncryptionInfo Stream does not exist");
+    fprintf(stderr, "Table stream could not be found\n");
+    exit(INVALID_DOCUMENT_STRUCTURE);
+  }
+
+  uint8_t* encInfoStream = 0;
+  if (pEncInfoEntry) { // word 2007
+    fprintf (stderr, "WORD 2007\n");
+    // make the ministream physically contiguous
+    uint32_t miniSectorSize = 1 << htoles (pCfb->fileHeader->MiniSectorShift);
+    uint32_t cur = pEncInfoEntry->StartingSectorLocation;
+    encInfoStream = (uint8_t*)malloc(sizeof(uint8_t)*
+               (pEncInfoEntry->StreamSizeLow + miniSectorSize));
+    for (int i=0; cur!=ENDOFCHAIN; i++) {
+      memcpy (encInfoStream+miniSectorSize*i, 
+              &pCfb->ministream[cur*miniSectorSize], miniSectorSize);
+      cur = iter_ministream_next (pCfb, cur);
+    }
+    HD("EncryptionInfo Stream", encInfoStream, pEncInfoEntry->StreamSizeLow);
+  } else {
+    if ((getFibbase(pCfb)->Flags & FIBBASE_FLAG_ENCRYPTED) == 0) {
+      DPRINTF("File is not encrypted!\n");
+      return -1;
+    }
+    encInfoStream = &pCfb->data[sector_offset(pCfb, 
+                     htolel(pTableEntry->StartingSectorLocation))];
+  }
+  
+  
+  // Table Stream: Try to parse the EncryptionHeader 
+  //               at the beginning of the stream.
+  uint16_t encVersionMajor =  htoles( *((uint16_t*)encInfoStream) );
+  uint16_t encVersionMinor =  htoles( *((uint16_t*)(encInfoStream
+                                                    + sizeof(uint16_t))) );
+  DPRINTF("Encryption version = %d.%d\n", encVersionMajor, encVersionMinor);
+  
+  if ((RC4_VERSION_MAJOR == encVersionMajor) &&
+      (RC4_VERSION_MINOR == encVersionMinor)) {
+    parse_rc4_encryption_header(encInfoStream, ctx);
+  } else if (( (CAPI_RC4_VERSION_MAJOR2 == encVersionMajor) 
+               || (CAPI_RC4_VERSION_MAJOR3 == encVersionMajor))
+             && (CAPI_RC4_VERSION_MINOR == encVersionMinor)) {
+    parse_capi_encryption_header(encInfoStream, ctx);
+  }
+  if (pEncInfoEntry) { free(encInfoStream); }
+  return 0;
+}
+
+doc_fibbase_t* getFibbase(cfb_t* pCfb) {
+  cfb_directoryentry_t *pDirentry = CFB_GET_DIRENTRY_BY_NAME (pCfb, cfb_direntry_WordDocument);
+  if (pDirentry==0) {
+    fprintf(stderr, "WordDocument stream could not be found\n");
+    exit(INVALID_DOCUMENT_STRUCTURE);
+  }
+  
+  uint32_t offset = sector_offset(pCfb, pDirentry->StartingSectorLocation);
+  doc_fibbase_t *pFibbase = (doc_fibbase_t*) &(pCfb->data[offset]);
+  
+  if (htoles(pFibbase->wIdent) != FIBBASE_IDENTIFIER) {
+    fprintf(stderr, "Fibbase has wrong identifier\n");
+    exit(INVALID_DOCUMENT_STRUCTURE);
+  }
+  
+  return pFibbase; 
+}
+
+cfb_directoryentry_t*
+getTableStream(cfb_t *pCfb) {
+
+  doc_fibbase_t* pFibbase = getFibbase(pCfb);
+  
+  if ((htoles(pFibbase->Flags) & FIBBASE_FLAG_WHICHTBLSTM) == 0) {
+    // whichTable == 0
+    return CFB_GET_DIRENTRY_BY_NAME (pCfb, cfb_direntry_0Table);
+  } else {
+    // whichTable == 1
+    return CFB_GET_DIRENTRY_BY_NAME (pCfb, cfb_direntry_1Table);
+  }
+
+}
+
+void
+parse_rc4_encryption_header(uint8_t* pData, crypto_ctx_t* pCryptoCtx) {
+
+  crypt_rc4_encryption_header_t* pRc4EncHeader = (crypt_rc4_encryption_header_t*)pData;
+
+  pCryptoCtx->algo = rc4_basic;
+  pCryptoCtx->keybits = 40;
+  pCryptoCtx->maxkeybits = 40;
+  memcpy(pCryptoCtx->salt, pRc4EncHeader->Salt, 16);
+  memcpy(pCryptoCtx->ev, pRc4EncHeader->EncryptedVerifier, 16);
+  memcpy(pCryptoCtx->evh, pRc4EncHeader->EncryptedVerifierHash, 16);
+  
+  DPRINTF("Encrypted with RC4/Basic\n");
+  HD("Salt", pCryptoCtx->salt, 16);
+  HD("EncryptedVerifier", pCryptoCtx->ev, 16);
+  HD("EncryptedVerifierHash", pCryptoCtx->evh, 16);
+    
+}
+
+void 
+parse_capi_encryption_header(uint8_t* pData, crypto_ctx_t* pCryptoCtx) {
+
+  /* pointer to first position of StreamHeader, EncryptionHeader, Verifier */
+  crypt_capi_encryption_header_t* pStreamHeader = 
+       (crypt_capi_encryption_header_t*)pData;
+  crypt_capi_rc4_encryption_header_t *pEncHeader = 
+     (crypt_capi_rc4_encryption_header_t*)
+        (pData + sizeof(crypt_capi_encryption_header_t));
+  uint32_t* verifierData = (uint32_t*)
+       (pData + sizeof(crypt_capi_encryption_header_t) 
+              + htolel(pStreamHeader->HeaderSize));
+
+  /* dump some information */
+  DPRINTF("CAPI EH.Version      = %d.%d\n", 
+    htoles(pStreamHeader->VersionMajor), htoles(pStreamHeader->VersionMinor));
+  DPRINTF("CAPI EH.Flags        = %08x\n", htolel(pStreamHeader->Flags));
+  DPRINTF("CAPI EH.HeaderSize   = %08x\n", htolel(pStreamHeader->HeaderSize));
+  DPRINTF("\n");
+  DPRINTF("CAPI EH.Flags        = %08x\n", htolel(pEncHeader->Flags));
+  DPRINTF("CAPI EH.SizeExtra    = %08x\n", htolel(pEncHeader->SizeExtra));
+  DPRINTF("CAPI EH.AlgID        = %08x\n", htolel(pEncHeader->AlgID));
+  DPRINTF("CAPI EH.AlgIDHash    = %08x\n", htolel(pEncHeader->AlgIDHash));
+  DPRINTF("CAPI EH.KeySize      = %08x\n", htolel(pEncHeader->KeySize));
+  DPRINTF("CAPI EH.ProviderType = %08x\n", htolel(pEncHeader->ProviderType));
+
+  // check which version
+  uint32_t flags = htolel(pStreamHeader->Flags);
+  fprintf (stderr, "Flags=%x\n", flags);
+  if (flags & ENCHEADER_FLAGS_EXTERNAL) {
+    fprintf (stderr, "External Encryption currently not supported\n");
+    exit(UNKOWN_ENCRYPTION_ALGORITHM);
+  } else if (flags & ENCHEADER_FLAGS_AES) {
+    fprintf (stderr, "AES encryption of ECMA-376 documents\n");
+    pCryptoCtx->algo = aes;
+    pCryptoCtx->keybits = htolel(pEncHeader->KeySize);
+    fprintf (stderr, "TODO, not finished yet\n");
+  } else {
+    // old format 
+
+    if (CAPI_ALGO_RC4 != htolel(pEncHeader->AlgID) ||
+		    CAPI_ALGO_SHA1 != htolel(pEncHeader->AlgIDHash) ||
+		    CAPI_CSP_RC4 != htolel(pEncHeader->ProviderType))
+    {
+      DPRINTF("Unknown Encryption Algorithm.\n");
+      exit(UNKOWN_ENCRYPTION_ALGORITHM);
+    }
+
+    pCryptoCtx->algo = rc4_capi;
+    pCryptoCtx->keybits = htolel(pEncHeader->KeySize);
+  
+    if (pCryptoCtx->keybits == 40) {
+      pCryptoCtx->maxkeybits = 128;
+    } else {
+      pCryptoCtx->maxkeybits = pCryptoCtx->keybits;
+    }
+  }
+
+  /* load the EncryptionVerifier information */
+    /*
+    pCryptoCtx->salt
+    pCryptoCtx->salt_size
+    pCryptoCtx->ev
+    pCryptoCtx->ev_size
+    pCryptoCtx->evh
+    pCryptoCtx->evh_size
+    */
+  pCryptoCtx->salt_size = verifierData[0];
+
+  DPRINTF("\n");
+  DPRINTF("SaltSize = %d\n", pCryptoCtx->salt_size);
+  assert(16 == pCryptoCtx->salt_size); // Only 16 byte salts supported at this time.
+  
+  pCryptoCtx->ev_size = 16;
+
+  memcpy(pCryptoCtx->salt, &verifierData[1], pCryptoCtx->salt_size);
+  HD("SALT", pCryptoCtx->salt, pCryptoCtx->salt_size);
+
+  memcpy(pCryptoCtx->ev, &verifierData[5], pCryptoCtx->salt_size);
+  HD("Verifier", pCryptoCtx->ev, pCryptoCtx->salt_size);
+
+  uint32_t evhSize = verifierData[9];
+  assert(20 == evhSize);  
+  pCryptoCtx->evh_size = evhSize;
+
+  memcpy(pCryptoCtx->evh, &verifierData[10], 32);
+
+  DPRINTF("VerifierHashSize = %d\n", evhSize);
+  HD("VerifierHash", pCryptoCtx->evh, evhSize);
+}
+
+void decrypt_stream_rc4(cfb_t* pCfb, uint32_t startSector, 
+     crypto_ctx_t *pCryptoCtx) {
+
+  uint32_t current_sector = startSector;
+  uint32_t current_block = 0;
+  uint8_t key[16];
+//  bzero(key, 16);
+  RC4_KEY rc4_key;
+  uint32_t szBlock = 1<<pCfb->fileHeader->SectorShift;  
+
+  do {
+      uint32_t offset = sector_offset(pCfb, current_sector);
+      uint8_t* data = &pCfb->data[offset];
+
+      // derive key for next block of 512 bytes
+      if (pCryptoCtx->algo == rc4_basic) {
+        key_rc4basic_derive(key, &pCryptoCtx->rc4basic_ctx, 
+                            pCryptoCtx->ucs2pw, pCryptoCtx->ucs2pw_size, 
+                            current_block);
+      } else if (pCryptoCtx->algo == rc4_capi) {
+        key_rc4capi_derive (key, &pCryptoCtx->rc4capi_ctx, 
+                            pCryptoCtx->ucs2pw, pCryptoCtx->ucs2pw_size, 
+                            current_block);
+      } else {
+        fprintf (stderr, "NOT IMPLEMENTED YET\n");
+	exit(UNKOWN_ENCRYPTION_ALGORITHM);
+      }
+      RC4_set_key(&rc4_key, pCryptoCtx->rc4capi_ctx.maxkeysz, key);
+
+      // decrypt the data stream inplace for RC4 basic
+      RC4(&rc4_key, szBlock, data, data);
+      HD("", data, szBlock);
+
+      // get next sector
+      current_sector = iter_next_sector(pCfb, current_sector);
+
+      current_block++;
+
+  } while(current_sector != ENDOFCHAIN);
+
+}
+
+void decrypt_word_file(cfb_t *pCfb, crypto_ctx_t* pCryptoCtx) {
+
+  cfb_directoryentry_t* direntry_table;
+  cfb_directoryentry_t* direntry_worddoc;
+  cfb_directoryentry_t* direntry_data;
+
+  uint32_t current_sector;
+  uint32_t current_block;
+  uint32_t offset;
+  uint8_t* data;
+  uint8_t buff[68];
+
+  if (pCryptoCtx->algo == rc4_basic)
+  {
+    
+    key_rc4basic_create(&pCryptoCtx->rc4basic_ctx, 
+             pCryptoCtx->salt, pCryptoCtx->ev, pCryptoCtx->evh);
+  } else if (pCryptoCtx->algo == rc4_basic) {
+    key_rc4capi_create( &pCryptoCtx->rc4capi_ctx,
+		    pCryptoCtx->salt, pCryptoCtx->ev, pCryptoCtx->evh,
+		    pCryptoCtx->keybits, pCryptoCtx->maxkeybits);
+  } else if (pCryptoCtx->algo == aes) {
+    // decryption is done when writing out the stream
+    return;
+  }
+
+  direntry_table = getTableStream(pCfb);  // get the 0Table or 1Table, depending on flag bit in FIB base
+  direntry_worddoc = CFB_GET_DIRENTRY_BY_NAME (pCfb, cfb_direntry_WordDocument );
+  direntry_data = CFB_GET_DIRENTRY_BY_NAME (pCfb, cfb_direntry_Data);
+
+
+
+    // decrypt the data stream first
+    //---------------------------------------------------------------------------
+    if (direntry_data!=0) {
+      decrypt_stream_rc4(pCfb, direntry_data->StartingSectorLocation, 
+         pCryptoCtx);
+    }
+   
+    if (direntry_worddoc!=0) {
+    // decrypt the worddoc stream
+    //---------------------------------------------------------------------
+
+    current_sector = direntry_worddoc->StartingSectorLocation;
+    current_block = 0;
+
+    // get the first 68 bytes of the stream (i.e. the FIB header)
+    offset = sector_offset(pCfb, current_sector);
+    data = &pCfb->data[offset];
+    memcpy(buff, data, 68);
+ 
+    decrypt_stream_rc4(pCfb, direntry_worddoc->StartingSectorLocation, 
+       pCryptoCtx);
+
+    // write the first 68 bytes back
+    current_sector = direntry_worddoc->StartingSectorLocation;
+    offset = sector_offset(pCfb, current_sector);
+    data = &pCfb->data[offset];
+    memcpy(data, buff, 68);
+    }
+
+    // decrypt the table stream
+    //---------------------------------------------------------------------------
+    decrypt_stream_rc4(pCfb, direntry_table->StartingSectorLocation,
+       pCryptoCtx);
+
+
+  // clear encrypted flag in FibBase
+  getFibbase(pCfb)->Flags ^= FIBBASE_FLAG_ENCRYPTED;
+
+}
+       

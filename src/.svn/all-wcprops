@@ -1,0 +1,173 @@
+K 25
+svn:wc:ra_dav:version-url
+V 46
+/svn/wk09/!svn/ver/46/trunk/from_wk08/word/src
+END
+testtime.c
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/wk09/!svn/ver/2/trunk/from_wk08/word/src/testtime.c
+END
+strconv.c
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/wk09/!svn/ver/23/trunk/from_wk08/word/src/strconv.c
+END
+cfb.h
+K 25
+svn:wc:ra_dav:version-url
+V 52
+/svn/wk09/!svn/ver/36/trunk/from_wk08/word/src/cfb.h
+END
+interface.c
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/svn/wk09/!svn/ver/9/trunk/from_wk08/word/src/interface.c
+END
+wordstreams.sh
+K 25
+svn:wc:ra_dav:version-url
+V 61
+/svn/wk09/!svn/ver/34/trunk/from_wk08/word/src/wordstreams.sh
+END
+strconv.h
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/wk09/!svn/ver/20/trunk/from_wk08/word/src/strconv.h
+END
+byteswap.h
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/wk09/!svn/ver/2/trunk/from_wk08/word/src/byteswap.h
+END
+testthread.c
+K 25
+svn:wc:ra_dav:version-url
+V 58
+/svn/wk09/!svn/ver/2/trunk/from_wk08/word/src/testthread.c
+END
+memeq.h
+K 25
+svn:wc:ra_dav:version-url
+V 53
+/svn/wk09/!svn/ver/2/trunk/from_wk08/word/src/memeq.h
+END
+wordstreams.c
+K 25
+svn:wc:ra_dav:version-url
+V 60
+/svn/wk09/!svn/ver/34/trunk/from_wk08/word/src/wordstreams.c
+END
+parse.c
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/wk09/!svn/ver/15/trunk/from_wk08/word/src/parse.c
+END
+decrypt.c
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/wk09/!svn/ver/46/trunk/from_wk08/word/src/decrypt.c
+END
+errorcodes.h
+K 25
+svn:wc:ra_dav:version-url
+V 59
+/svn/wk09/!svn/ver/38/trunk/from_wk08/word/src/errorcodes.h
+END
+wordstreams.h
+K 25
+svn:wc:ra_dav:version-url
+V 60
+/svn/wk09/!svn/ver/34/trunk/from_wk08/word/src/wordstreams.h
+END
+test.c
+K 25
+svn:wc:ra_dav:version-url
+V 52
+/svn/wk09/!svn/ver/2/trunk/from_wk08/word/src/test.c
+END
+parse.h
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/wk09/!svn/ver/12/trunk/from_wk08/word/src/parse.h
+END
+crypto.c
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/wk09/!svn/ver/46/trunk/from_wk08/word/src/crypto.c
+END
+compat.c
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/wk09/!svn/ver/2/trunk/from_wk08/word/src/compat.c
+END
+crypto.h
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/wk09/!svn/ver/45/trunk/from_wk08/word/src/crypto.h
+END
+BSDmakefile
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/svn/wk09/!svn/ver/2/trunk/from_wk08/word/src/BSDmakefile
+END
+debug.c
+K 25
+svn:wc:ra_dav:version-url
+V 53
+/svn/wk09/!svn/ver/2/trunk/from_wk08/word/src/debug.c
+END
+stringToWchar.sh
+K 25
+svn:wc:ra_dav:version-url
+V 63
+/svn/wk09/!svn/ver/22/trunk/from_wk08/word/src/stringToWchar.sh
+END
+key.c
+K 25
+svn:wc:ra_dav:version-url
+V 52
+/svn/wk09/!svn/ver/42/trunk/from_wk08/word/src/key.c
+END
+compat.h
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/wk09/!svn/ver/2/trunk/from_wk08/word/src/compat.h
+END
+cfb.c
+K 25
+svn:wc:ra_dav:version-url
+V 52
+/svn/wk09/!svn/ver/44/trunk/from_wk08/word/src/cfb.c
+END
+debug.h
+K 25
+svn:wc:ra_dav:version-url
+V 53
+/svn/wk09/!svn/ver/2/trunk/from_wk08/word/src/debug.h
+END
+Makefile
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/wk09/!svn/ver/43/trunk/from_wk08/word/src/Makefile
+END
+key.h
+K 25
+svn:wc:ra_dav:version-url
+V 52
+/svn/wk09/!svn/ver/42/trunk/from_wk08/word/src/key.h
+END

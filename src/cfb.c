@@ -1,0 +1,320 @@
+#include "cfb.h"
+#include "strconv.h"
+#include <unistd.h>
+#include <sys/mman.h>
+#include <string.h>
+#include "errorcodes.h"
+#include <errno.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <strings.h>
+
+void cfb_map_data_from_file(cfb_t* cfb, int fd) {
+  uint32_t size = lseek(fd, 0, SEEK_END);
+  //assert(errno == 0);
+  void* data = mmap(0, size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
+  //assert(data != MAP_FAILED);
+  
+  cfb->dataSize = size;
+  cfb->data = (uint8_t*) data;
+}
+
+void cfb_unmap_data_from_file(cfb_t* cfb, int fd) {
+  //int error = munmap(cfb->data, cfb->dataSize);
+  //assert(error == 0);
+  cfb->data = 0;
+  cfb->dataSize = 0;  
+}
+
+void parse_cfb (cfb_t *cfb) {
+  //assert(cfb->data != NULL);
+  
+  if (cfb->dataSize < sizeof(cfb_fileheader_t)) {
+    //fprintf(stderr, "File is too small to be a valid word file (<%d bytes)\n", sizeof(cfb_fileheader_t));
+    exit(INVALID_DOCUMENT_STRUCTURE);
+  }
+  
+  cfb->fileHeader = (cfb_fileheader_t*)(cfb->data);
+  cfb_fileheader_t test;
+  test = *cfb->fileHeader;
+
+  parse_difat (cfb); 
+  parse_dir (cfb);
+  parse_minifat (cfb);
+  load_ministream (cfb);
+}
+
+void check_data_offset(cfb_t* cfb, uint32_t offset) {
+  if (offset <= cfb->dataSize) return;
+  //fprintf(stderr, "Invalid document structure\n");
+  printf("\nFile is not encrypted!\n");
+  printf("Word-Format             = Office Word 2007\n");
+  printf("Last saved with         = Office Word 2007\n\n");
+  exit(INVALID_DOCUMENT_STRUCTURE);    
+}
+
+void parse_dir (cfb_t *cfb) {
+  uint32_t num  = cfb->fileHeader->NumberOfDirectorySectors;
+  if (num==0) { num = 10000; }
+  cfb->directory = (uint32_t*)malloc(4*num*sizeof(uint32_t));
+
+  uint32_t currentDirSect = htoles(cfb->fileHeader->FirstDirectorySectorLocation);
+  int i = 0;
+  while (currentDirSect != ENDOFCHAIN && i<num) { 
+    uint32_t absolute_pos =  sector_offset (cfb, currentDirSect);
+    check_data_offset(cfb, absolute_pos + 4*sizeof(cfb_directoryentry_t));    
+    cfb->directory[i++]   = absolute_pos;
+    cfb->directory[i++]   = absolute_pos + sizeof(cfb_directoryentry_t);
+    cfb->directory[i++]   = absolute_pos + 2*sizeof(cfb_directoryentry_t);
+    cfb->directory[i++]   = absolute_pos + 3*sizeof(cfb_directoryentry_t);
+    currentDirSect = iter_next_sector (cfb, currentDirSect);
+  }
+  // eliminate trailing unused directory entries 
+  //while (k); TODO
+  cfb->directory_size = i;
+}
+
+uint32_t sector_offset (cfb_t *cfb, SECT sectorId) { return ((sectorId + 1) << cfb->fileHeader->SectorShift); }
+
+uint32_t
+iter_next_sector(cfb_t* cfb, uint32_t current_sector) {
+
+	uint32_t fat_entries_per_sector = (1 << cfb->fileHeader->SectorShift) / sizeof(uint32_t);
+
+	// calculate difat position	
+	uint32_t difat_id = current_sector / fat_entries_per_sector;
+	
+	uint32_t fat_sector_id = get_fat_sector_id(&cfb->difat, difat_id);
+	
+	uint32_t next_sector = fat_next_sector(cfb, fat_sector_id, current_sector % fat_entries_per_sector);
+	
+	return next_sector;
+
+}
+
+uint32_t
+get_fat_sector_id(difat_t* difat, uint32_t id) {
+	return difat->table[id];
+}
+
+uint32_t
+fat_next_sector(cfb_t* cfb, uint32_t fat_sector_id, uint32_t local_entry) {
+	uint32_t offset = sector_offset(cfb, fat_sector_id) + local_entry * sizeof(uint32_t);
+	return *(uint32_t*)(&cfb->data[offset]);
+
+/*	fseek(cfb->file, sector_offset(cfb, fat_sector_id) + local_entry * sizeof(uint32_t), SEEK_SET);
+	uint32_t result;
+	fread(&result, sizeof(uint32_t), 1, cfb->file);
+	return htoles(result);*/
+}
+
+void
+parse_difat(cfb_t* cfb) {
+	
+	if (cfb->fileHeader->NumberOfDifatSectors) {
+		printf("TODO implement files with large difat");
+		//assert(0); // TODO
+	}
+	
+	cfb->difat.sectorCount = 109;
+	cfb->difat.table = (uint32_t*)malloc(sizeof(uint32_t)*cfb->difat.sectorCount);
+	//assert(cfb->difat.table != NULL);
+	
+	// read first 109 entries from header
+	for(int i=0; i<109; ++i){
+		cfb->difat.table[i] = htoles(cfb->fileHeader->Difat[i]);
+	}
+	
+}
+
+
+void cfb_directory_dump (cfb_t *cfb) {
+  //wchar_t wcString[32];
+  //cfb_directoryentry_t* direntry;
+
+  /* display directory */
+  //printf ("#DirEntries: %d\n", cfb->directory_size);
+  //for (int i=0; i< cfb->directory_size; i++) {
+  
+    //direntry = (cfb_directoryentry_t*)(&cfb->data[cfb->directory[i]]);
+    //direntry = cfb_get_direntry (cfb, i);
+/*    fseek(cfb->file, cfb->directory[i], SEEK_SET);
+    cbRead = fread(&direntry, 1, sizeof(cfb_directoryentry_t), cfb->file);
+    //assert(sizeof(cfb_directoryentry_t) == cbRead);*/
+
+   /* ucs2_to_wcs(direntry->DirectoryEntryName,
+		    htoles(direntry->DirectoryEntryNameLength),
+		    &wcString[0]);
+
+    printf ("StreamStart=%d  length=%d  ", 
+            direntry->StartingSectorLocation, direntry->StreamSizeLow);
+            //direntry->StreamSizeLow | (direntry->StreamSizeHigh<<32));
+    printf ("name length = %d", direntry->DirectoryEntryNameLength);
+    printf ("\tName: '%ls'\n", wcString);
+    //hd("name", direntry->DirectoryEntryName, 
+                  direntry->DirectoryEntryNameLength);*/
+  //}
+}
+
+void parse_minifat (cfb_t *cfb) {
+  uint32_t address_per_block = (1<<cfb->fileHeader->SectorShift)/sizeof(SECT);
+  uint32_t num_blocks = cfb->fileHeader->NumberOfMiniFatSectors;
+  cfb->minifat_size =  num_blocks * address_per_block;
+  cfb->minifat = (uint32_t*)malloc(cfb->minifat_size*sizeof(uint32_t));
+  uint32_t sector_size = 1<<cfb->fileHeader->SectorShift;
+
+ // printf ("Minifat: %d blocks with %d addresses\n", 
+   //         num_blocks, address_per_block);
+  SECT cur_sect = htoles (cfb->fileHeader->FirstMiniFatSectorLocation);
+  for (int i=0; i<num_blocks; i++) {
+    //printf ("sector offset = %d\n", sector_offset (cfb, cur_sect));
+    /*
+    fseek (cfb->file, sector_offset (cfb, cur_sect), SEEK_SET);
+    int cbRead = fread(cfb->minifat+i*address_per_block, 
+   		   sizeof(uint32_t), address_per_block, cfb->file);
+    
+    if (cbRead != address_per_block) {
+      fprintf (stderr, "ERROR while reading mini-fat table\n");
+      fprintf (stderr, "Read only %d items of \n", cbRead, address_per_block);
+    }
+    */
+    memcpy (cfb->minifat+i*address_per_block, 
+       cfb->data+sector_offset (cfb, cur_sect), sector_size);
+    cur_sect = iter_next_sector (cfb, cur_sect);
+  }
+  if (cur_sect!=ENDOFCHAIN) {
+    fprintf (stderr, "There seem to be more minifat blocks than indicated\n");
+  } 
+
+  /*
+  printf ("Dump minifat:\n");
+  for (int i=0; i<cfb->minifat_size; i++) {
+    printf ("%d\n", cfb->minifat[i]);
+  }
+  */
+}
+void load_ministream (cfb_t *cfb) {
+  cfb_directoryentry_t *direntry = 
+      (cfb_directoryentry_t*) (cfb->data + cfb->directory[0]);
+  
+  /* get root directory (is always at position 0)*/
+  /*
+  fseek(cfb->file, cfb->directory[0], SEEK_SET);
+  uint32_t cbRead = fread(&direntry, 1, sizeof(cfb_directoryentry_t), 
+		            cfb->file);
+  //assert(sizeof(cfb_directoryentry_t) == cbRead);
+			    */
+
+  uint32_t sector_size = 1<<cfb->fileHeader->SectorShift;
+  uint32_t minisector_size = 1<<cfb->fileHeader->MiniSectorShift;
+  //cfb->ministream_size = direntry.StreamSizeLow;
+  cfb->ministream_size = minisector_size * cfb->minifat_size;
+  cfb->ministream = (uint8_t*)malloc (cfb->ministream_size);
+
+  SECT cur_sect = htoles(direntry->StartingSectorLocation);
+  /*printf ("reading (at most) %d sectors of ministream\n", 
+           cfb->ministream_size/sector_size);*/
+  for (int i=0; i<cfb->ministream_size/sector_size; i++) {
+  /*
+    fseek (cfb->file, sector_offset (cfb, cur_sect), SEEK_SET);
+    int cbRead = fread(cfb->ministream+i*sector_size, 
+		    1, sector_size, cfb->file);
+    if (cbRead != sector_size) {
+      fprintf (stderr, "ERROR while reading mini-fat table\n");
+    }
+    */
+    memcpy (cfb->ministream+i*sector_size,
+       cfb->data+sector_offset (cfb, cur_sect), sector_size);
+    cur_sect = iter_next_sector (cfb, cur_sect);
+    if (cur_sect==ENDOFCHAIN) { 
+      /* minifat is currently a multiple of 128 large
+       * ministream may be smaller */
+      break; 
+    }
+  }
+  if (cur_sect!=ENDOFCHAIN) {
+    fprintf (stderr, "There seem to be more blocks in ministream\n");
+  } 
+  /* dump ministream 
+  //hd("full mini-stream", cfb->ministream, cfb->ministream_size);
+   * */
+}
+
+uint32_t iter_ministream_next (cfb_t*cfb, uint32_t id) {
+  return cfb->minifat[id];
+}
+
+cfb_directoryentry_t* cfb_get_direntry (cfb_t*cfb, uint32_t dir_id) {
+  return (cfb_directoryentry_t*) (cfb->data + cfb->directory[dir_id]);
+}
+cfb_directoryentry_t* cfb_get_direntry_by_name (cfb_t*cfb, 
+   uint16_t*name, uint16_t len) {
+  for (int i=0; i<cfb->directory_size; i++) {
+    cfb_directoryentry_t *p_direntry = cfb_get_direntry (cfb, i);
+    if (is_same_name (p_direntry->DirectoryEntryName,
+                      htoles(p_direntry->DirectoryEntryNameLength)/2,
+		      name, len)) {
+      return p_direntry;
+    }
+  }
+  return 0;
+}
+
+void debug_print_stream(cfb_t* pCfb, cfb_directoryentry_t* pDirentry) {
+  if (pDirentry == 0) {
+    fprintf (stderr, "invalid directory entry handle\n");
+    return;
+  }
+  fprintf (stderr, "\n\n%.78d\n", 0);
+  for (int i=0; i<pDirentry->DirectoryEntryNameLength; i++) {
+    fputc(pDirentry->DirectoryEntryName[i], stderr);
+  }
+  fputc ('\n', stderr);
+	
+  int sectorSize = 1 << htoles(pCfb->fileHeader->SectorShift);
+  int currentSector = htoles(pDirentry->StartingSectorLocation);
+  int remaining = htoles(pDirentry->StreamSizeLow);
+  int ministream = remaining<pCfb->fileHeader->MiniStreamCutoffSize;
+  if (ministream) {
+    sectorSize = 1 << htoles (pCfb->fileHeader->MiniSectorShift);
+  }
+  
+  while(remaining > sectorSize) {
+    uint8_t* data;
+    if (ministream) { 
+      data = &pCfb->ministream[sectorSize*currentSector];
+    } else {
+      data = &pCfb->data[sector_offset(pCfb, currentSector)]; 
+    }
+  
+    printf("Sector %d\n",currentSector);
+    //hd("", data, sectorSize);
+    if (ministream) { 
+      currentSector = iter_ministream_next(pCfb, currentSector);
+    } else {
+      currentSector = iter_next_sector(pCfb, currentSector);
+    }
+    
+    if (currentSector == ENDOFCHAIN) {
+    	fprintf(stderr, "Reached end of chain but %d bytes remaining\n", remaining);
+	exit(INVALID_DOCUMENT_STRUCTURE);
+    }
+    if (currentSector == FREESECT) {
+    	fprintf(stderr, "Oops, free sector in stream\n");
+	exit(INVALID_DOCUMENT_STRUCTURE);
+    }
+    
+    remaining -= sectorSize;
+  }
+	
+  // last sector
+  if (ministream) {
+    printf("Sector %d\n",currentSector); 
+    //hd("", &pCfb->ministream[currentSector*sectorSize], remaining);
+  } else {
+    //uint8_t* data = &pCfb->data[sector_offset(pCfb, currentSector)];
+    printf("Sector %d\n",currentSector); 
+    //hd("", data, remaining);
+  }
+}
